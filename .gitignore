@@ -2,4 +2,4 @@ frame/*
 logs/*
 openpose/*
 model/logs/*
-*/__pycache__/*
+*.pyc
