@@ -1,0 +1,6 @@
+benddown
+kneel
+raisehand
+sit
+squat
+stand

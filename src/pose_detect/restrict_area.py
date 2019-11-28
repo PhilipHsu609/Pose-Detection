@@ -1,11 +1,11 @@
 class Restrict:
-    def __init__(self):
+    def __init__(self, areaThreshold: float = 0.8):
         self.resIsSet = False
         self.resX1 = 0
         self.resY1 = 0
         self.resX2 = 0
         self.resY2 = 0
-        self.restrictThresh = 0.8
+        self.restrictThresh = areaThreshold
 
     def setRestrict(self, restrict):
         self.resIsSet = True
@@ -16,6 +16,9 @@ class Restrict:
         self.toTLBR()
 
     def toTLBR(self):
+        """
+        To top left buttom right
+        """
         minX, minY = min(self.resX1, self.resX2), min(self.resY1, self.resY2)
         maxX, maxY = max(self.resX1, self.resX2), max(self.resY1, self.resY2)
         self.resX1 = minX
@@ -53,6 +56,6 @@ class Restrict:
         crossArea = width * height
         ratio = crossArea / personArea
 
-        print("RATIO: ", ratio)
+        # print("RATIO: ", ratio)
 
         return True if ratio >= self.restrictThresh else False

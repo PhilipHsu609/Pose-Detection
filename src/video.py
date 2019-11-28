@@ -7,30 +7,23 @@ class Communicate(QtCore.QObject):
 
 
 class VideoTimer(QtCore.QThread):
-    def __init__(self, frequent=20):
+    def __init__(self):
         QtCore.QThread.__init__(self)
         self.stopped = False
-        self.frequent = frequent
         self.timeSignal = Communicate()
         self.mutex = QtCore.QMutex()
+        self.fps = 0
 
     def run(self):
-        with QtCore.QMutexLocker(self.mutex):
-            self.stopped = False
-        while True:
-            if self.stopped:
-                return
-            self.timeSignal.signal.emit("1")
-            time.sleep(1 / self.frequent)
+        if self.stopped:
+            with QtCore.QMutexLocker(self.mutex):
+                self.stopped = False
+            return
+        self.timeSignal.signal.emit("1")
 
     def stop(self):
         with QtCore.QMutexLocker(self.mutex):
             self.stopped = True
 
-    def isStopped(self):
-        with QtCore.QMutexLocker(self.mutex):
-            return self.stopped
-
     def setFPS(self, fps):
-        self.frequent = fps
-
+        self.fps = fps

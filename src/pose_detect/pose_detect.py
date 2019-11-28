@@ -1,9 +1,18 @@
 import cv2
 import time
 import numpy as np
+import math
+from collections import OrderedDict
 from .restrict_area import Restrict
 from .action import *
 from .track import frameTrack
+from ..utils import readConfig, getActionLabel
+from ..logger import Logger
+
+logger = Logger("pose_detect")
+params = readConfig("./config.cfg", "App")
+RESTRICT_AREA_THREAHOLD = float(params["restrict_area_threshold"])
+BODY_POINTS_THRESHOLD = int(params["body_ponits_threshold"])
 
 
 class Person:
@@ -11,28 +20,27 @@ class Person:
         self.keypoints = None
         self.box = None
         self.id = -1
-        self.action = ""
+        self.action = None
         self.inRestrict = False
 
 
 class PoseDetect:
     def __init__(self):
         self.poseKeypoints = None
-        self.poseBoxes = []
-        self.personList = []
+        self.poseBoxes = list()
+        self.personList = list()
         self.frame = None
-        self.restrict = Restrict()
-        self.actionText = "stand"
+        self.restrict = Restrict(RESTRICT_AREA_THREAHOLD)
         self.actionCountText = ""
-        self.actionCount = {
-            "sit": 0,
-            "kneel": 0,
-            "squat": 0,
-            "benddown": 0,
-            "raisehand": 0,
-            "stand": 0,
-            "restrict": 0,
-        }
+        self.actionCount = self.initActionCount()
+
+    def initActionCount(self):
+        tmpList = list()
+        allAction = getActionLabel("./action_label.txt")
+        for action in allAction:
+            tmpList.append((action, 0))
+        tmpList.append(("restrict", 0))
+        return OrderedDict(tmpList)
 
     def getActionCountText(self):
         return self.actionCountText
@@ -52,44 +60,41 @@ class PoseDetect:
         self.restrict.setRestrict(restrict)
 
     def resetPose(self):
-        self.personList = []
-        self.poseBoxes = []
-        self.actionCount = {
-            "sit": 0,
-            "kneel": 0,
-            "squat": 0,
-            "benddown": 0,
-            "raisehand": 0,
-            "stand": 0,
-            "restrict": 0,
-        }
+        self.personList = list()
+        self.poseBoxes = list()
+        self.actionCount = self.initActionCount()
 
     def getFrame(self):
         return self.frame
 
     def checkKeypointsCount(self, idx):
         """
-        Check poseKeypoints is more then 10 points.
-        Return Ture if more then 10 points is 0.
+        Check whether poseKeypoints is more then
+        {BODY_POINTS_THRESHOLD} points are non 0 or not.
+
+        Parameter
+        ----------
+        idx: index of people
+
+        Return Ture if more then {BODY_POINTS_THRESHOLD} points is non 0.
         """
-        count = 0
-        for i in range(25):
-            if self.poseKeypoints[idx, i, 0] == 0:
-                count += 1
-        return False if count < 20 else True
+        axisX = self.poseKeypoints[idx, :, 0]
+        count = sum(val > 0 for val in axisX)
+        return True if count >= BODY_POINTS_THRESHOLD else False
 
     def cleanBodypoints(self):
         """
-        Clean self.poseKeypoints which less then 10 body points
+        Clean self.poseKeypoints which less then
+        {BODY_POINTS_THRESHOLD} body points.
         """
         people = self.poseKeypoints.shape[0]
-        check = [True for _ in range(people)]
-
+        lst = list()
         for idx in range(people):
             if self.checkKeypointsCount(idx):
-                check[idx] = False
-
-        self.poseKeypoints = self.poseKeypoints[check]
+                lst.append(self.poseKeypoints[idx, :, :])
+        if lst == []:
+            lst = 0
+        self.poseKeypoints = np.array(lst)
 
     def findBox(self, idx):
         """
@@ -103,27 +108,20 @@ class PoseDetect:
         ----------
         (top left x, top left y, bottom right x, bottom right y)
         """
-        maxX = 0
-        maxY = 0
-        minX = 1e4
-        minY = 1e4
-        arr = self.poseKeypoints
-        for i in range(25):
-            if arr[idx, i, 0] != 0:
-                if arr[idx, i, 0] < minX:
-                    minX = arr[idx, i, 0]
-                if arr[idx, i, 0] > maxX:
-                    maxX = arr[idx, i, 0]
-            if arr[idx, i, 1] != 0:
-                if arr[idx, i, 1] < minY:
-                    minY = arr[idx, i, 1]
-                if arr[idx, i, 1] > maxY:
-                    maxY = arr[idx, i, 1]
+        axisX = self.poseKeypoints[idx, :, 0]
+        axisY = self.poseKeypoints[idx, :, 1]
+        maxX = int(axisX.max())
+        maxY = int(axisY.max())
+        minX = int(axisX[axisX > 0].min())
+        minY = int(axisY[axisY > 0].min())
+
+        # minX = minX - 20 if minX - 20 > 0 else 2
+        minY = minY - 20 if minY - 20 > 0 else 2
         return (minX, minY, maxX, maxY)
 
-    def drawBox(self, minX, minY, maxX, maxY, msg, color=(0, 255, 0)):
+    def draw(self, minX, minY, maxX, maxY, msg, color=(0, 255, 0)):
         """
-        Draw a box where the person is and a label about his action
+        Draw a bounding box where the person is and a label about his action
 
         Parameters
         ----------
@@ -140,19 +138,30 @@ class PoseDetect:
             msg,
             (minX, minY),
             cv2.FONT_HERSHEY_SIMPLEX,
-            1,
+            0.8,
             (255, 255, 255),
             2,
         )
 
-    def draw(self):
+    def drawRestrict(self):
+        if self.restrict.isSet():
+            resX1, resY1, resX2, resY2 = self.restrict.getRestrict()
+            self.draw(
+                resX1, resY1, resX2, resY2, "", (0, 0, 255)
+            )
+
+    def drawBBox(self):
         """
-        Draw boxes on the frame
+        Draw all the bounding boxes on the frame
         """
         for person in self.personList:
+            if person.id == -1:
+                continue
             msg = "ID-{}[{}]".format(person.id, person.action)
             if person.inRestrict:
-                self.drawBox(
+                logger.warning(
+                    "WARNING ID-{} is inside Restrict Area".format(person.id))
+                self.draw(
                     person.box[0],
                     person.box[1],
                     person.box[2],
@@ -161,36 +170,46 @@ class PoseDetect:
                     (0, 0, 255),
                 )
             else:
-                self.drawBox(
-                    person.box[0], person.box[1], person.box[2], person.box[3], msg
-                )
+                self.draw(
+                    person.box[0],
+                    person.box[1],
+                    person.box[2],
+                    person.box[3],
+                    msg)
 
     def setActionCountText(self):
         self.actionCountText = ""
-        for i in self.actionCount.items():
-            self.actionCountText += str(i[0]) + "\t:" + str(i[1]) + "\n"
+        for action in self.actionCount.items():
+            self.actionCountText += "{:<12}\t: {}\n".format(
+                action[0], action[1])
+        self.actionCountText = self.actionCountText[:-1]
 
     def detect(self):
         """
-        Detect every person in a frame
+        Detect every people in frame
         """
+        height, width = self.frame.shape[:2]
+        predictAction = actionDetect(self.poseKeypoints, height, width)
         for i in range(self.poseKeypoints.shape[0]):
             minX, minY, maxX, maxY = self.findBox(i)
             self.poseBoxes.append([minX, minY, maxX, maxY])
-            arr = self.poseKeypoints
 
             person = Person()
             person.keypoints = self.poseKeypoints[i]
             person.box = [minX, minY, maxX, maxY]
 
-            if self.restrict.isInside(minX, minY, maxX, maxY) and self.restrict.isSet():
+            if self.restrict.isInside(
+                    minX,
+                    maxY - (maxY - minY) * 0.1,
+                    maxX,
+                    maxY) and self.restrict.isSet():
                 resX1, resY1, resX2, resY2 = self.restrict.getRestrict()
 
                 person.inRestrict = True
                 person.action = "restrict"
 
-                x = int((resX1 + resX2) / 2) - 30
-                y = int((resY1 + resY2) / 2)
+                x = int((resX1 + resX2) / 2) - 65
+                y = int((resY1 + resY2) / 2) + 15
                 cv2.putText(
                     self.frame,
                     "WARNING",
@@ -201,39 +220,35 @@ class PoseDetect:
                     2,
                 )
             else:
-                if kneel(arr, i):
-                    person.action = "kneel"
-                elif sitCalf(arr, i, maxY, minY):
-                    person.action = "sit"
-                elif squat(arr, i, maxY, minY):
-                    person.action = "squat"
-                elif sit3(arr, i):
-                    person.action = "sit"
-                elif squat2(arr, i):
-                    person.action = "squat"
-                elif sit2(arr, i):
-                    person.action = "sit"
-                elif benddown(arr, i):
-                    person.action = "benddown"
-                elif raisehand(arr, i):
-                    person.action = "raisehand"
-                else:
-                    person.action = "stand"
+                person.action = predictAction[i]
 
             self.actionCount[person.action] += 1
             self.personList.append(person)
 
-        id_list = frameTrack(self.poseBoxes, self.frame)
-        for person, id_ in zip(self.personList, id_list):
-            person.id = id_
+        id_list, chk_list = frameTrack(self.poseBoxes, self.frame)
+        for person in self.personList:
+            # 原點到Box中心的歐式距離
+            centX = (person.box[0] + person.box[2]) / 2
+            centY = (person.box[1] + person.box[3]) / 2
+            chk = math.sqrt(centX**2 + centY**2)
+            try:
+                idx = chk_list.index(min(chk_list, key=lambda x: abs(x - chk)))
+                id_ = id_list[idx]
+                del id_list[idx], chk_list[idx]
+                person.id = id_
+            except BaseException:
+                person.id = -1
+            # print("{} --- {}".format(id_, chk))
 
     def poseStart(self):
+        # logger.debug("Pose Start")
         if self.poseKeypoints.ndim != 0:
             self.cleanBodypoints()
 
         if self.poseKeypoints.ndim != 0:
             self.detect()
-            self.draw()
+            self.drawBBox()
 
+        self.drawRestrict()
         self.setActionCountText()
         self.resetPose()

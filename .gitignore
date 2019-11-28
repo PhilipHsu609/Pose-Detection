@@ -1,0 +1,4 @@
+frame/*
+logs/*
+openpose/*
+model/logs/*
